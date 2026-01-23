@@ -4,6 +4,7 @@ import sqlite3
 import os
 from contextlib import contextmanager
 import numpy as np
+from pathlib import Path
 
 # ==========================================
 # ⚙️ GLOBAL CONFIGURATION
@@ -14,7 +15,11 @@ APP_VERSION = "v1.0.0"
 APP_ICON = "⚡"
 THEME_COLOR = "#00FFA3" 
 BG_COLOR = "#050505"      
-DB_FILE = "master_db.db"
+
+# Use cache directory for database (works on mobile)
+CACHE_DIR = Path.home() / ".streamlit_cache"
+CACHE_DIR.mkdir(exist_ok=True)
+DB_FILE = str(CACHE_DIR / "master_db.db")
 CSV_BACKUP = "master_data.csv"
 TOPIC_OPTIONS = ["Physics", "Chemistry", "Biology", "Higher Math", "General Math", "English", "ICT", "BGS"]
 
@@ -23,16 +28,24 @@ TOPIC_OPTIONS = ["Physics", "Chemistry", "Biology", "Higher Math", "General Math
 # ==========================================
 @st.cache_resource
 def get_connection():
-    """Cached connection to avoid multiple connections."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10.0)
-    conn.execute('PRAGMA journal_mode=WAL')  # Write-Ahead Logging for better concurrency
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Cached connection - works on mobile."""
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30.0)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA synchronous=NORMAL')
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        st.error(f"❌ Database connection failed: {str(e)}")
+        return None
 
 @contextmanager
 def get_db_cursor():
     """Context manager for safe database operations."""
     conn = get_connection()
+    if conn is None:
+        st.error("❌ Cannot connect to database")
+        raise Exception("Database connection failed")
     try:
         cursor = conn.cursor()
         yield cursor
@@ -45,9 +58,16 @@ def get_db_cursor():
         pass  # Connection stays cached
 
 def init_db():
-    """Initialize database and migrate from CSV if needed."""
+    """Initialize database once."""
+    # Check if already initialized
+    if 'db_initialized' in st.session_state:
+        return
+    
     try:
         conn = get_connection()
+        if conn is None:
+            return
+        
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS study_cards 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,26 +75,29 @@ def init_db():
                       success INTEGER DEFAULT 0, failure INTEGER DEFAULT 0, 
                       bookmarked BOOLEAN DEFAULT 0)''')
         conn.commit()
+        st.session_state.db_initialized = True
         
-        # --- AUTOMATIC MIGRATION FROM CSV ---
-        if os.path.exists(CSV_BACKUP):
+        # Only migrate CSV once
+        if os.path.exists(CSV_BACKUP) and not st.session_state.get('csv_migrated', False):
             try:
                 df_old = pd.read_csv(CSV_BACKUP)
                 if 'Subject' in df_old.columns: 
                     df_old.rename(columns={'Subject': 'topic'}, inplace=True)
                 if 'Topic' in df_old.columns: 
                     df_old.rename(columns={'Topic': 'subtopic'}, inplace=True)
-                df_old.columns = [c.lower() for c in df_old.columns]
+                df_old.columns = [col.lower() for col in df_old.columns]
                 
                 df_old.to_sql('study_cards', conn, if_exists='append', index=False)
                 os.rename(CSV_BACKUP, "master_data_OLD_MIGRATED.csv")
-                st.success("✅ Successfully migrated CSV data to SQLite!")
+                st.session_state.csv_migrated = True
+                st.success("✅ CSV migrated to SQLite!")
             except Exception as e:
-                st.error(f"❌ Migration error: {str(e)}")
+                st.warning(f"⚠️ CSV migration skipped: {str(e)}")
+                st.session_state.csv_migrated = True
     except Exception as e:
-        st.error(f"❌ Database initialization error: {str(e)}")
+        st.error(f"❌ Database init error: {str(e)}")
 
-# Call init on start
+# Initialize DB on app start
 init_db()
 
 @st.cache_data(ttl=300)
@@ -82,7 +105,9 @@ def load_all_data():
     """Load all data from database with caching (5 min TTL)."""
     try:
         conn = get_connection()
-        df = pd.read_sql_query("SELECT * FROM study_cards", conn)
+        if conn is None:
+            return pd.DataFrame()
+        df = pd.read_sql_query("SELECT * FROM study_cards ORDER BY id", conn)
         return df if not df.empty else pd.DataFrame(columns=['id', 'topic', 'subtopic', 'key', 'value', 'success', 'failure', 'bookmarked'])
     except Exception as e:
         st.error(f"❌ Error loading data: {str(e)}")
