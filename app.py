@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import os
 from contextlib import contextmanager
+import numpy as np
 
 # ==========================================
 # ⚙️ GLOBAL CONFIGURATION
@@ -21,7 +22,8 @@ TOPIC_OPTIONS = ["Physics", "Chemistry", "Biology", "Higher Math", "General Math
 @st.cache_resource
 def get_connection():
     """Cached connection to avoid multiple connections."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10.0)
+    conn.execute('PRAGMA journal_mode=WAL')  # Write-Ahead Logging for better concurrency
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -99,17 +101,28 @@ if 'card_index' not in st.session_state:
     st.session_state.card_index = 0
 if 'show_answer' not in st.session_state: 
     st.session_state.show_answer = False
+if 'card_order' not in st.session_state:
+    st.session_state.card_order = None  # Will store randomized card indices
 
 # ==========================================
 # 2. UI SETUP
 # ==========================================
-st.set_page_config(page_title=APP_NAME, page_icon=APP_ICON, layout="wide")
+st.set_page_config(page_title=APP_NAME, page_icon=APP_ICON, layout="wide", initial_sidebar_state="auto")
 st.markdown(f"""
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <style>
-    .stApp {{ background-color: {BG_COLOR}; color: #E0E0E0; }}
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    html, body, .stApp {{ background-color: {BG_COLOR}; color: #E0E0E0; width: 100%; }}
     section[data-testid="stSidebar"] {{ background-color: #0A0A0A !important; border-right: 1px solid #222; }}
-    .stButton > button {{ width: 100%; border-radius: 8px; background-color: transparent; border: 1px solid #333; }}
+    .stButton > button {{ width: 100%; border-radius: 8px; background-color: transparent; border: 1px solid #333; padding: 10px 8px; font-size: 14px; }}
     .stButton > button:hover {{ border-color: {THEME_COLOR}; color: {THEME_COLOR}; }}
+    @media (max-width: 768px) {{
+        .stApp {{ padding: 8px; }}
+        .stButton > button {{ padding: 8px 6px; font-size: 12px; }}
+        h1, h2, h3 {{ font-size: 16px !important; }}
+        .stMetric {{ font-size: 12px; }}
+        [data-testid="column"] {{ padding: 2px !important; }}
+    }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -200,8 +213,13 @@ if st.session_state.page == "Study Mode":
             if filtered_df.empty: 
                 st.warning("⚠️ No cards matching criteria.")
             else:
+                # Initialize or regenerate random card order
+                if st.session_state.card_order is None or len(st.session_state.card_order) != len(filtered_df):
+                    st.session_state.card_order = np.random.permutation(len(filtered_df)).tolist()
+                
                 card_num = st.session_state.card_index % len(filtered_df)
-                card = filtered_df.iloc[card_num]
+                actual_index = st.session_state.card_order[card_num]
+                card = filtered_df.iloc[actual_index]
                 
                 # ===== PROGRESS BAR =====
                 progress_col1, progress_col2 = st.columns([3, 1])
