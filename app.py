@@ -8,7 +8,9 @@ import numpy as np
 # ==========================================
 # ⚙️ GLOBAL CONFIGURATION
 # ==========================================
-APP_NAME = "SSC ACADEMIC HUB (SQL Edition)"
+APP_NAME = "SSC ACADEMIC HUB"
+APP_TAGLINE = "by £Akand~"
+APP_VERSION = "v1.0.0"
 APP_ICON = "⚡"
 THEME_COLOR = "#00FFA3" 
 BG_COLOR = "#050505"      
@@ -103,11 +105,13 @@ if 'show_answer' not in st.session_state:
     st.session_state.show_answer = False
 if 'card_order' not in st.session_state:
     st.session_state.card_order = None  # Will store randomized card indices
+if 'expanded_topic' not in st.session_state:
+    st.session_state.expanded_topic = "Physics"  # Track which topic expands
 
 # ==========================================
 # 2. UI SETUP
 # ==========================================
-st.set_page_config(page_title=APP_NAME, page_icon=APP_ICON, layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title=f"{APP_NAME} {APP_VERSION}", page_icon=APP_ICON, layout="wide", initial_sidebar_state="auto")
 st.markdown(f"""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <style>
@@ -131,21 +135,26 @@ st.markdown(f"""
 # ==========================================
 with st.sidebar:
     st.title(f"{APP_ICON} {APP_NAME}")
-    if st.button("📖 Study Mode"): 
-        st.session_state.page = "Study Mode"
-        st.rerun()
-    if st.button("🗂️ Master Database"): 
-        st.session_state.page = "Master Database"
-        st.rerun()
+    st.caption(f"{APP_TAGLINE} • {APP_VERSION}", help="Made by Wasif Akand")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📖 Study Mode", use_container_width=True): 
+            st.session_state.page = "Study Mode"
+            st.rerun()
+    with col2:
+        if st.button("🗂️ Database", use_container_width=True): 
+            st.session_state.page = "Master Database"
+            st.rerun()
     st.divider()
 
     df_master = load_all_data()
 
     if st.session_state.page == "Study Mode":
-        with st.expander("➕ **Add New Subtopic**"):
-            t_in = st.selectbox("Select Topic", TOPIC_OPTIONS)
-            s_in = st.text_input("Subtopic Name").strip()
-            if st.button("Initialize"):
+        # ===== ADD NEW SUBTOPIC =====
+        with st.expander("➕ **Add New Subtopic**", expanded=False):
+            t_in = st.selectbox("Select Topic", TOPIC_OPTIONS, key="new_topic_select")
+            s_in = st.text_input("Subtopic Name", placeholder="e.g., Motion & Forces").strip()
+            if st.button("✅ Create", use_container_width=True):
                 if s_in:
                     try:
                         with get_db_cursor() as cursor:
@@ -153,37 +162,133 @@ with st.sidebar:
                                          (t_in, s_in, "Definition", "Answer"))
                         clear_data_cache()
                         st.session_state.active_topic, st.session_state.active_subtopic = t_in, s_in
+                        st.session_state.expanded_topic = t_in
                         st.success("✅ Subtopic created!")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Error creating subtopic: {str(e)}")
+                        st.error(f"❌ Error: {str(e)}")
                 else:
                     st.warning("⚠️ Please enter a subtopic name.")
 
-        st.subheader("📚 Library")
+        st.divider()
+
+        # ===== SEARCH LIBRARY =====
+        search_query = st.text_input("🔍 Search Subtopics", placeholder="Type to filter...").lower()
+
+        st.subheader("📚 My Library")
         if df_master.empty:
             st.info("ℹ️ No topics yet. Create one above!")
         else:
             topics = sorted(df_master['topic'].unique())
+            
             for t in topics:
-                with st.expander(f"**{t}**"):
-                    subtopics = sorted(df_master[df_master['topic'] == t]['subtopic'].unique())
-                    for s in subtopics:
-                        c1, c2 = st.columns([4, 1])
-                        if c1.button(f"• {s}", key=f"nav_{t}_{s}"):
-                            st.session_state.active_topic, st.session_state.active_subtopic = t, s
-                            st.session_state.card_index = 0
-                            st.session_state.show_answer = False
-                            st.rerun()
-                        if c2.button("🗑️", key=f"del_{t}_{s}"):
-                            try:
-                                with get_db_cursor() as cursor:
-                                    cursor.execute("DELETE FROM study_cards WHERE topic=? AND subtopic=?", (t, s))
-                                clear_data_cache()
-                                st.success("✅ Deleted!")
+                topic_cards = df_master[df_master['topic'] == t]
+                subtopics = sorted(topic_cards['subtopic'].unique())
+                
+                # Filter by search
+                filtered_subtopics = [s for s in subtopics if search_query in s.lower()]
+                
+                if not filtered_subtopics and search_query:
+                    continue
+                
+                # Calculate topic stats
+                topic_total = len(topic_cards)
+                topic_success = topic_cards['success'].sum()
+                topic_failure = topic_cards['failure'].sum()
+                topic_accuracy = (topic_success / (topic_success + topic_failure) * 100) if (topic_success + topic_failure) > 0 else 0
+                
+                # Color code based on accuracy
+                if topic_accuracy < 50 and (topic_success + topic_failure) > 0:
+                    topic_color = "🔴"  # Weak
+                elif topic_accuracy < 80 and (topic_success + topic_failure) > 0:
+                    topic_color = "🟡"  # Medium
+                else:
+                    topic_color = "🟢"  # Strong
+                
+                # Auto-expand active topic
+                is_active_topic = (st.session_state.active_topic == t)
+                
+                with st.expander(f"{topic_color} **{t}** ({topic_total})", expanded=is_active_topic):
+                    for s in filtered_subtopics:
+                        sub_cards = topic_cards[topic_cards['subtopic'] == s]
+                        sub_total = len(sub_cards)
+                        sub_success = sub_cards['success'].sum()
+                        sub_failure = sub_cards['failure'].sum()
+                        sub_accuracy = (sub_success / (sub_success + sub_failure) * 100) if (sub_success + sub_failure) > 0 else 0
+                        
+                        # Highlight active subtopic
+                        is_active = (st.session_state.active_topic == t and st.session_state.active_subtopic == s)
+                        
+                        # Color code subtopic
+                        if sub_accuracy < 50 and sub_total > 0:
+                            sub_color = "🔴"
+                        elif sub_accuracy < 80 and sub_total > 0:
+                            sub_color = "🟡"
+                        else:
+                            sub_color = "🟢"
+                        
+                        # Layout
+                        sc1, sc2, sc3 = st.columns([2.5, 0.8, 0.7])
+                        
+                        with sc1:
+                            # Active indicator
+                            prefix = "→ " if is_active else "  "
+                            button_style = "font-weight: bold;" if is_active else ""
+                            
+                            if st.button(
+                                f"{prefix}{sub_color} {s}\n✅{int(sub_success)}/{sub_total}", 
+                                key=f"nav_{t}_{s}",
+                                use_container_width=True,
+                                help=f"Accuracy: {sub_accuracy:.0f}%"
+                            ):
+                                st.session_state.active_topic = t
+                                st.session_state.active_subtopic = s
+                                st.session_state.card_index = 0
+                                st.session_state.show_answer = False
+                                st.session_state.card_order = None  # Reset randomization
+                                st.session_state.expanded_topic = t
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ Error deleting: {str(e)}")
+                        
+                        with sc2:
+                            st.caption(f"📊\n{sub_accuracy:.0f}%")
+                        
+                        with sc3:
+                            if st.button("🗑️", key=f"del_{t}_{s}", help="Delete"):
+                                # Confirmation dialog
+                                if st.session_state.get(f"confirm_delete_{t}_{s}", False):
+                                    try:
+                                        with get_db_cursor() as cursor:
+                                            cursor.execute("DELETE FROM study_cards WHERE topic=? AND subtopic=?", (t, s))
+                                        clear_data_cache()
+                                        st.session_state[f"confirm_delete_{t}_{s}"] = False
+                                        st.success("✅ Deleted!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error: {str(e)}")
+                                else:
+                                    # Show confirmation
+                                    st.session_state[f"confirm_delete_{t}_{s}"] = True
+                                    st.rerun()
+                        
+                        # Confirmation message
+                        if st.session_state.get(f"confirm_delete_{t}_{s}", False):
+                            st.warning(f"⚠️ Confirm delete '{s}'?")
+                            col_confirm1, col_confirm2 = st.columns(2)
+                            with col_confirm1:
+                                if st.button("✅ Yes, Delete", key=f"confirm_yes_{t}_{s}", use_container_width=True):
+                                    try:
+                                        with get_db_cursor() as cursor:
+                                            cursor.execute("DELETE FROM study_cards WHERE topic=? AND subtopic=?", (t, s))
+                                        clear_data_cache()
+                                        st.session_state[f"confirm_delete_{t}_{s}"] = False
+                                        st.success("✅ Deleted!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error: {str(e)}")
+                            with col_confirm2:
+                                if st.button("❌ Cancel", key=f"confirm_no_{t}_{s}", use_container_width=True):
+                                    st.session_state[f"confirm_delete_{t}_{s}"] = False
+                                    st.rerun()
 
 # ==========================================
 # 4. MAIN INTERFACE
@@ -191,7 +296,8 @@ with st.sidebar:
 df_master = load_all_data()
 
 if st.session_state.page == "Study Mode":
-    st.title(f"{st.session_state.active_topic} : {st.session_state.active_subtopic}")
+    st.markdown(f"## {st.session_state.active_topic} : {st.session_state.active_subtopic}")
+    st.markdown(f"<p style='text-align: right; font-size: 12px; color: #666;'>{APP_TAGLINE}</p>", unsafe_allow_html=True)
     tabs = st.tabs(["⚡ Flash Card", "📥 Add Content", "📂 Local Data", "📊 Topic Overview", "🔖 Bookmarks"])
 
     mask = (df_master['topic'] == st.session_state.active_topic) & (df_master['subtopic'] == st.session_state.active_subtopic)
@@ -285,19 +391,20 @@ if st.session_state.page == "Study Mode":
                         if st.button("👁️ Reveal Answer", use_container_width=True, key="reveal"):
                             st.session_state.show_answer = True
                             st.rerun()
-                    else:
-                        st.success("✨ Answer revealed!")
 
                 st.divider()
 
                 # ===== ACTION BUTTONS =====
                 if not st.session_state.show_answer:
-                    # Show feedback buttons
-                    st.markdown("<p style='text-align: center; color: #888; font-size: 12px;'>How did you do?</p>", unsafe_allow_html=True)
-                    feedback_col1, feedback_col2, feedback_col3 = st.columns(3)
+                    # Before reveal - waiting to see answer
+                    st.markdown("<p style='text-align: center; color: #888; font-size: 12px;'>Try to answer first, then reveal!</p>", unsafe_allow_html=True)
+                else:
+                    # After reveal - self-check and mark
+                    st.markdown("<p style='text-align: center; color: #888; font-size: 12px;'>Did you get it right? Self-check now.</p>", unsafe_allow_html=True)
+                    feedback_col1, feedback_col2, feedback_col3, feedback_col4 = st.columns(4)
                     
                     with feedback_col1:
-                        if st.button("✅ Got It!", use_container_width=True, key="got_it"):
+                        if st.button("✅ Got it Right!", use_container_width=True, key="got_right"):
                             try:
                                 with get_db_cursor() as cursor:
                                     cursor.execute("UPDATE study_cards SET success = success + 1 WHERE id=?", (int(card['id']),))
@@ -309,41 +416,20 @@ if st.session_state.page == "Study Mode":
                                 st.error(f"❌ Error: {str(e)}")
                     
                     with feedback_col2:
-                        if st.button("⏭️ Skip", use_container_width=True, key="skip"):
-                            st.session_state.card_index += 1
-                            st.session_state.show_answer = False
-                            st.rerun()
-                    
-                    with feedback_col3:
-                        if st.button("❌ Need Help", use_container_width=True, key="need_help"):
+                        if st.button("❌ Got it Wrong", use_container_width=True, key="got_wrong"):
                             try:
                                 with get_db_cursor() as cursor:
                                     cursor.execute("UPDATE study_cards SET failure = failure + 1 WHERE id=?", (int(card['id']),))
                                 clear_data_cache()
-                                st.session_state.show_answer = True
+                                st.session_state.card_index += 1
+                                st.session_state.show_answer = False
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error: {str(e)}")
-                else:
-                    # Show navigation buttons
-                    st.markdown("<p style='text-align: center; color: #888; font-size: 12px;'>Next action</p>", unsafe_allow_html=True)
-                    nav_col1, nav_col2, nav_col3 = st.columns(3)
                     
-                    with nav_col1:
-                        if st.button("⬅️ Previous", use_container_width=True, key="prev"):
-                            st.session_state.card_index = max(0, st.session_state.card_index - 1)
-                            st.session_state.show_answer = False
-                            st.rerun()
-                    
-                    with nav_col2:
-                        if st.button("➡️ Next Card", use_container_width=True, key="next"):
-                            st.session_state.card_index += 1
-                            st.session_state.show_answer = False
-                            st.rerun()
-                    
-                    with nav_col3:
-                        bookmark_icon = "💛 Bookmarked" if card['bookmarked'] else "🤍 Bookmark"
-                        if st.button(bookmark_icon, use_container_width=True, key="bookmark"):
+                    with feedback_col3:
+                        bookmark_icon = "💛" if card['bookmarked'] else "🤍"
+                        if st.button(f"{bookmark_icon} Bookmark", use_container_width=True, key="bookmark_ans"):
                             try:
                                 new_val = 0 if card['bookmarked'] else 1
                                 with get_db_cursor() as cursor:
@@ -352,6 +438,12 @@ if st.session_state.page == "Study Mode":
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error bookmarking: {str(e)}")
+                    
+                    with feedback_col4:
+                        if st.button("⏭️ Skip", use_container_width=True, key="skip_ans"):
+                            st.session_state.card_index += 1
+                            st.session_state.show_answer = False
+                            st.rerun()
                 
                 # ===== STATS BAR =====
                 st.divider()
@@ -426,6 +518,7 @@ if st.session_state.page == "Study Mode":
 
 else:  # MASTER DATABASE
     st.title("🗂️ Master Database")
+    st.markdown(f"<p style='text-align: right; font-size: 12px; color: #666;'>{APP_TAGLINE}</p>", unsafe_allow_html=True)
     if df_master.empty:
         st.info("ℹ️ Database is empty.")
     else:
@@ -445,3 +538,15 @@ else:  # MASTER DATABASE
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error saving: {str(e)}")
+
+# ==========================================
+# FOOTER
+# ==========================================
+st.divider()
+st.markdown(f"""
+    <div style='text-align: center; color: #666; font-size: 12px; padding: 20px 0;'>
+        <p>⚡ <strong>{APP_NAME}</strong> {APP_VERSION}</p>
+        <p>Created by <strong>Wasif Akand</strong> • {APP_TAGLINE}</p>
+        <p style='margin-top: 10px; opacity: 0.7;'>Study smarter, not harder • Made with ❤️</p>
+    </div>
+""", unsafe_allow_html=True)
