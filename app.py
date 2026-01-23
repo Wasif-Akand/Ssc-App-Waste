@@ -200,50 +200,151 @@ if st.session_state.page == "Study Mode":
             if filtered_df.empty: 
                 st.warning("⚠️ No cards matching criteria.")
             else:
-                card = filtered_df.iloc[st.session_state.card_index % len(filtered_df)]
-                st.info(f"**Question:** {card['key']}")
-                if st.session_state.show_answer: 
-                    st.success(f"**Answer:** {card['value']}")
+                card_num = st.session_state.card_index % len(filtered_df)
+                card = filtered_df.iloc[card_num]
+                
+                # ===== PROGRESS BAR =====
+                progress_col1, progress_col2 = st.columns([3, 1])
+                with progress_col1:
+                    st.progress((card_num + 1) / len(filtered_df), text=f"Card {card_num + 1}/{len(filtered_df)}")
+                with progress_col2:
+                    st.metric("✅ Correct", int(card['success']))
 
-                col1, col2, col3, col4 = st.columns(4)
+                st.divider()
+
+                # ===== FLASHCARD DISPLAY =====
+                st.markdown(f"""
+                    <style>
+                    .flashcard-container {{
+                        margin: 30px auto;
+                        text-align: center;
+                    }}
+                    .flashcard {{
+                        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                        border: 2px solid {THEME_COLOR};
+                        border-radius: 15px;
+                        padding: 50px 30px;
+                        min-height: 300px;
+                        display: flex;
+                        flex-direction: column;
+                        justify-content: center;
+                        align-items: center;
+                        box-shadow: 0 10px 40px rgba(0,255,163,0.1);
+                        transition: all 0.3s ease;
+                    }}
+                    .card-label {{
+                        font-size: 12px;
+                        color: {THEME_COLOR};
+                        text-transform: uppercase;
+                        letter-spacing: 2px;
+                        margin-bottom: 20px;
+                        opacity: 0.7;
+                    }}
+                    .card-content {{
+                        font-size: 28px;
+                        color: #E0E0E0;
+                        font-weight: 500;
+                        line-height: 1.6;
+                        word-wrap: break-word;
+                    }}
+                    .card-content-answer {{
+                        color: {THEME_COLOR};
+                        font-weight: 600;
+                    }}
+                    </style>
+                    <div class="flashcard-container">
+                        <div class="flashcard">
+                            <div class="card-label">{"QUESTION" if not st.session_state.show_answer else "ANSWER"}</div>
+                            <div class="card-content {"card-content-answer" if st.session_state.show_answer else ""}">{card['value'] if st.session_state.show_answer else card['key']}</div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+                # ===== FLIP BUTTON =====
+                col_flip = st.columns([1, 2, 1])
+                with col_flip[1]:
+                    if not st.session_state.show_answer:
+                        if st.button("👁️ Reveal Answer", use_container_width=True, key="reveal"):
+                            st.session_state.show_answer = True
+                            st.rerun()
+                    else:
+                        st.success("✨ Answer revealed!")
+
+                st.divider()
+
+                # ===== ACTION BUTTONS =====
                 if not st.session_state.show_answer:
-                    if col1.button("✅ Right"):
-                        try:
-                            with get_db_cursor() as cursor:
-                                cursor.execute("UPDATE study_cards SET success = success + 1 WHERE id=?", (int(card['id']),))
-                            clear_data_cache()
-                            st.session_state.show_answer = True
+                    # Show feedback buttons
+                    st.markdown("<p style='text-align: center; color: #888; font-size: 12px;'>How did you do?</p>", unsafe_allow_html=True)
+                    feedback_col1, feedback_col2, feedback_col3 = st.columns(3)
+                    
+                    with feedback_col1:
+                        if st.button("✅ Got It!", use_container_width=True, key="got_it"):
+                            try:
+                                with get_db_cursor() as cursor:
+                                    cursor.execute("UPDATE study_cards SET success = success + 1 WHERE id=?", (int(card['id']),))
+                                clear_data_cache()
+                                st.session_state.card_index += 1
+                                st.session_state.show_answer = False
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error: {str(e)}")
+                    
+                    with feedback_col2:
+                        if st.button("⏭️ Skip", use_container_width=True, key="skip"):
+                            st.session_state.card_index += 1
+                            st.session_state.show_answer = False
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error updating: {str(e)}")
-                    if col2.button("❌ Wrong"):
-                        try:
-                            with get_db_cursor() as cursor:
-                                cursor.execute("UPDATE study_cards SET failure = failure + 1 WHERE id=?", (int(card['id']),))
-                            clear_data_cache()
-                            st.session_state.show_answer = True
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error updating: {str(e)}")
+                    
+                    with feedback_col3:
+                        if st.button("❌ Need Help", use_container_width=True, key="need_help"):
+                            try:
+                                with get_db_cursor() as cursor:
+                                    cursor.execute("UPDATE study_cards SET failure = failure + 1 WHERE id=?", (int(card['id']),))
+                                clear_data_cache()
+                                st.session_state.show_answer = True
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error: {str(e)}")
                 else:
-                    if col1.button("➡️ Next Card"): 
-                        st.session_state.card_index += 1
-                        st.session_state.show_answer = False
-                        st.rerun()
-
-                if col3.button("🔖 Bookmark"):
-                    try:
-                        new_val = 0 if card['bookmarked'] else 1
-                        with get_db_cursor() as cursor:
-                            cursor.execute("UPDATE study_cards SET bookmarked = ? WHERE id=?", (new_val, int(card['id'])))
-                        clear_data_cache()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error bookmarking: {str(e)}")
-                if col4.button("⏭️ Skip"): 
-                    st.session_state.card_index += 1
-                    st.session_state.show_answer = False
-                    st.rerun()
+                    # Show navigation buttons
+                    st.markdown("<p style='text-align: center; color: #888; font-size: 12px;'>Next action</p>", unsafe_allow_html=True)
+                    nav_col1, nav_col2, nav_col3 = st.columns(3)
+                    
+                    with nav_col1:
+                        if st.button("⬅️ Previous", use_container_width=True, key="prev"):
+                            st.session_state.card_index = max(0, st.session_state.card_index - 1)
+                            st.session_state.show_answer = False
+                            st.rerun()
+                    
+                    with nav_col2:
+                        if st.button("➡️ Next Card", use_container_width=True, key="next"):
+                            st.session_state.card_index += 1
+                            st.session_state.show_answer = False
+                            st.rerun()
+                    
+                    with nav_col3:
+                        bookmark_icon = "💛 Bookmarked" if card['bookmarked'] else "🤍 Bookmark"
+                        if st.button(bookmark_icon, use_container_width=True, key="bookmark"):
+                            try:
+                                new_val = 0 if card['bookmarked'] else 1
+                                with get_db_cursor() as cursor:
+                                    cursor.execute("UPDATE study_cards SET bookmarked = ? WHERE id=?", (new_val, int(card['id'])))
+                                clear_data_cache()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error bookmarking: {str(e)}")
+                
+                # ===== STATS BAR =====
+                st.divider()
+                stats_col1, stats_col2, stats_col3 = st.columns(3)
+                with stats_col1:
+                    st.metric("📌 Bookmarked", len(sub_df[sub_df['bookmarked'] == 1]))
+                with stats_col2:
+                    st.metric("❌ Need Help", len(filtered_df[filtered_df['failure'] > 0]))
+                with stats_col3:
+                    accuracy = (int(card['success']) / (int(card['success']) + int(card['failure'])) * 100) if (int(card['success']) + int(card['failure'])) > 0 else 0
+                    st.metric("📊 Accuracy", f"{accuracy:.0f}%")
 
     with tabs[1]:  # BULK ADD
         st.subheader("Format: Question -!- Answer")
