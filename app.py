@@ -19,7 +19,7 @@ BG_COLOR = "#050505"
 # Use cache directory for database (works on mobile)
 CACHE_DIR = Path.home() / ".streamlit_cache"
 CACHE_DIR.mkdir(exist_ok=True)
-DB_FILE = str(CACHE_DIR / "master_db.db")
+DB_FILE = "master_db.db"  # Use original location
 CSV_BACKUP = "master_data.csv"
 TOPIC_OPTIONS = ["Physics", "Chemistry", "Biology", "Higher Math", "General Math", "English", "ICT", "BGS"]
 
@@ -77,23 +77,20 @@ def init_db():
         conn.commit()
         st.session_state.db_initialized = True
         
-        # Only migrate CSV once
-        if os.path.exists(CSV_BACKUP) and not st.session_state.get('csv_migrated', False):
-            try:
-                df_old = pd.read_csv(CSV_BACKUP)
-                if 'Subject' in df_old.columns: 
-                    df_old.rename(columns={'Subject': 'topic'}, inplace=True)
-                if 'Topic' in df_old.columns: 
-                    df_old.rename(columns={'Topic': 'subtopic'}, inplace=True)
-                df_old.columns = [col.lower() for col in df_old.columns]
-                
-                df_old.to_sql('study_cards', conn, if_exists='append', index=False)
-                os.rename(CSV_BACKUP, "master_data_OLD_MIGRATED.csv")
-                st.session_state.csv_migrated = True
-                st.success("✅ CSV migrated to SQLite!")
-            except Exception as e:
-                st.warning(f"⚠️ CSV migration skipped: {str(e)}")
-                st.session_state.csv_migrated = True
+        # Remove duplicates on startup
+        try:
+            df = pd.read_sql_query("SELECT * FROM study_cards", conn)
+            if not df.empty:
+                duplicates = df.duplicated(subset=['topic', 'subtopic', 'key'], keep='first')
+                if duplicates.sum() > 0:
+                    dup_ids = df[duplicates]['id'].tolist()
+                    placeholders = ','.join('?' * len(dup_ids))
+                    c.execute(f"DELETE FROM study_cards WHERE id IN ({placeholders})", dup_ids)
+                    conn.commit()
+                    st.warning(f"⚠️ Cleaned {len(dup_ids)} duplicates!")
+        except Exception as e:
+            st.warning(f"⚠️ Could not clean duplicates: {str(e)}")
+            
     except Exception as e:
         st.error(f"❌ Database init error: {str(e)}")
 
@@ -133,6 +130,10 @@ if 'card_order' not in st.session_state:
 if 'expanded_topic' not in st.session_state:
     st.session_state.expanded_topic = "Physics"  # Track which topic expands
 
+# Force re-migration attempt
+if 'old_db_migrated' not in st.session_state:
+    st.session_state.old_db_migrated = False
+
 # ==========================================
 # 2. UI SETUP
 # ==========================================
@@ -143,11 +144,14 @@ st.markdown(f"""
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     html, body, .stApp {{ background-color: {BG_COLOR}; color: #E0E0E0; width: 100%; }}
     section[data-testid="stSidebar"] {{ background-color: #0A0A0A !important; border-right: 1px solid #222; }}
-    .stButton > button {{ width: 100%; border-radius: 8px; background-color: transparent; border: 1px solid #333; padding: 10px 8px; font-size: 14px; }}
-    .stButton > button:hover {{ border-color: {THEME_COLOR}; color: {THEME_COLOR}; }}
+    .stButton > button {{ width: 100%; border-radius: 8px; background-color: transparent; border: 1px solid #444 !important; padding: 12px 10px !important; font-size: 14px; line-height: 1.5; display: flex; align-items: center; justify-content: center; }}
+    .stButton > button > * {{ display: flex; align-items: center; justify-content: center; }}
+    .stButton > button p {{ margin: 0; padding: 0; }}
+    .stButton > button:hover {{ border-color: {THEME_COLOR} !important; color: {THEME_COLOR}; border: 1.5px solid {THEME_COLOR} !important; }}
+    .stButton > button:focus {{ border: 1.5px solid {THEME_COLOR} !important; }}
     @media (max-width: 768px) {{
         .stApp {{ padding: 8px; }}
-        .stButton > button {{ padding: 8px 6px; font-size: 12px; }}
+        .stButton > button {{ padding: 10px 8px !important; font-size: 12px; }}
         h1, h2, h3 {{ font-size: 16px !important; }}
         .stMetric {{ font-size: 12px; }}
         [data-testid="column"] {{ padding: 2px !important; }}
@@ -183,13 +187,20 @@ with st.sidebar:
                 if s_in:
                     try:
                         with get_db_cursor() as cursor:
-                            cursor.execute("INSERT INTO study_cards (topic, subtopic, key, value) VALUES (?,?,?,?)", 
-                                         (t_in, s_in, "Definition", "Answer"))
-                        clear_data_cache()
-                        st.session_state.active_topic, st.session_state.active_subtopic = t_in, s_in
-                        st.session_state.expanded_topic = t_in
-                        st.success("✅ Subtopic created!")
-                        st.rerun()
+                            # Check if subtopic already exists
+                            cursor.execute("SELECT COUNT(*) FROM study_cards WHERE topic=? AND subtopic=?", (t_in, s_in))
+                            exists = cursor.fetchone()[0] > 0
+                            
+                            if exists:
+                                st.warning(f"⚠️ Subtopic '{s_in}' already exists in {t_in}!")
+                            else:
+                                cursor.execute("INSERT INTO study_cards (topic, subtopic, key, value) VALUES (?,?,?,?)", 
+                                             (t_in, s_in, "Definition", "Answer"))
+                                clear_data_cache()
+                                st.session_state.active_topic, st.session_state.active_subtopic = t_in, s_in
+                                st.session_state.expanded_topic = t_in
+                                st.success("✅ Subtopic created!")
+                                st.rerun()
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
                 else:
@@ -252,52 +263,38 @@ with st.sidebar:
                         else:
                             sub_color = "🟢"
                         
-                        # Layout
-                        sc1, sc2, sc3 = st.columns([2.5, 0.8, 0.7])
+                        # Layout - subtopic button with delete icon on right
+                        col_main = st.columns([1])
                         
-                        with sc1:
+                        with col_main[0]:
                             # Active indicator
                             prefix = "→ " if is_active else "  "
-                            button_style = "font-weight: bold;" if is_active else ""
                             
-                            if st.button(
-                                f"{prefix}{sub_color} {s}\n✅{int(sub_success)}/{sub_total}", 
-                                key=f"nav_{t}_{s}",
-                                use_container_width=True,
-                                help=f"Accuracy: {sub_accuracy:.0f}%"
-                            ):
-                                st.session_state.active_topic = t
-                                st.session_state.active_subtopic = s
-                                st.session_state.card_index = 0
-                                st.session_state.show_answer = False
-                                st.session_state.card_order = None  # Reset randomization
-                                st.session_state.expanded_topic = t
-                                st.rerun()
-                        
-                        with sc2:
-                            st.caption(f"📊\n{sub_accuracy:.0f}%")
-                        
-                        with sc3:
-                            if st.button("🗑️", key=f"del_{t}_{s}", help="Delete"):
-                                # Confirmation dialog
-                                if st.session_state.get(f"confirm_delete_{t}_{s}", False):
-                                    try:
-                                        with get_db_cursor() as cursor:
-                                            cursor.execute("DELETE FROM study_cards WHERE topic=? AND subtopic=?", (t, s))
-                                        clear_data_cache()
-                                        st.session_state[f"confirm_delete_{t}_{s}"] = False
-                                        st.success("✅ Deleted!")
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"❌ Error: {str(e)}")
-                                else:
-                                    # Show confirmation
-                                    st.session_state[f"confirm_delete_{t}_{s}"] = True
+                            # Container for button and delete
+                            inner_col1, inner_col2 = st.columns([19, 1])
+                            
+                            with inner_col1:
+                                if st.button(
+                                    f"{prefix}{sub_color} {s}\n({sub_total} cards) • ✅{int(sub_success)} • 📊{sub_accuracy:.0f}%", 
+                                    key=f"nav_{t}_{s}",
+                                    use_container_width=True,
+                                    help=f"Accuracy: {sub_accuracy:.0f}%"
+                                ):
+                                    st.session_state.active_topic = t
+                                    st.session_state.active_subtopic = s
+                                    st.session_state.card_index = 0
+                                    st.session_state.show_answer = False
+                                    st.session_state.card_order = None  # Reset randomization
+                                    st.session_state.expanded_topic = t
                                     st.rerun()
+                            
+                            with inner_col2:
+                                if st.button("🗑️", key=f"del_{t}_{s}", help="Delete", use_container_width=True):
+                                    st.session_state[f"confirm_delete_{t}_{s}"] = True
                         
-                        # Confirmation message
+                        # Confirmation dialog (outside button, no rerun)
                         if st.session_state.get(f"confirm_delete_{t}_{s}", False):
-                            st.warning(f"⚠️ Confirm delete '{s}'?")
+                            st.warning(f"⚠️ Really delete '{s}'? This cannot be undone!")
                             col_confirm1, col_confirm2 = st.columns(2)
                             with col_confirm1:
                                 if st.button("✅ Yes, Delete", key=f"confirm_yes_{t}_{s}", use_container_width=True):
@@ -487,15 +484,35 @@ if st.session_state.page == "Study Mode":
         if st.button("🚀 Process"):
             if bulk.strip():
                 try:
+                    added = 0
+                    skipped = 0
                     with get_db_cursor() as cursor:
                         for line in bulk.strip().split('\n'):
                             if "-!-" in line:
                                 parts = line.split("-!-")
                                 if len(parts) == 2:
-                                    cursor.execute("INSERT INTO study_cards (topic, subtopic, key, value) VALUES (?,?,?,?)", 
-                                                 (st.session_state.active_topic, st.session_state.active_subtopic, parts[0].strip(), parts[1].strip()))
+                                    q = parts[0].strip()
+                                    a = parts[1].strip()
+                                    
+                                    # Check if this card already exists
+                                    cursor.execute("SELECT COUNT(*) FROM study_cards WHERE topic=? AND subtopic=? AND key=?", 
+                                                 (st.session_state.active_topic, st.session_state.active_subtopic, q))
+                                    exists = cursor.fetchone()[0] > 0
+                                    
+                                    if exists:
+                                        skipped += 1
+                                    else:
+                                        cursor.execute("INSERT INTO study_cards (topic, subtopic, key, value) VALUES (?,?,?,?)", 
+                                                     (st.session_state.active_topic, st.session_state.active_subtopic, q, a))
+                                        added += 1
+                    
                     clear_data_cache()
-                    st.success("✅ Cards added!")
+                    if added > 0:
+                        st.success(f"✅ Added {added} cards!")
+                    if skipped > 0:
+                        st.warning(f"⚠️ Skipped {skipped} duplicates")
+                    if added > 0 or skipped > 0:
+                        st.rerun()
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error adding cards: {str(e)}")
